@@ -7,22 +7,33 @@
 # Doc: https://www.pulumi.com/docs/intro/concepts/config/#code
 # Hint: Require a configuration parameter named "base_name" that you can then use as a basis for resource names.
 
+## (Optional) Exercise 3: Use explicit naming for the resource group instead of autonaming.
+# Note: This means you have to prevent resource naming conflicts.
+# Hint: Resources have a "_name" property that allows you to override autonaming.
+# Doc: https://www.pulumi.com/docs/reference/pkg/azure-native/resources/resourcegroup/
+
 import pulumi
 from pulumi_azure_native import resources
 
 ## Exercise 2 ##
-config = pulumi.Config()
-base_name = config.require("base_name")
+# config = pulumi.Config()
+# base_name = config.require("base_name")
 ## Exercise 2 ##
 
 
 # Create an Azure Resource Group
+resource_group = resources.ResourceGroup("resource_group")
+
 ## Exercise 2 ##
-#resource_group = resources.ResourceGroup("resource_group")
-resource_group = resources.ResourceGroup(f"{base_name}-rg")
+# resource_group = resources.ResourceGroup(f"{base_name}-rg")
 ## Exercise 2 ##
 
+## Exercise 3 ##
+# resource_group = resources.ResourceGroup(f"{base_name}-rg",
+#   resource_group_name=base_name)
+## Exercise 3 ##
+
 ## Exercise 1 ##
-pulumi.export("rg_name", resource_group.name)
+# pulumi.export("rg_name", resource_group.name)
 ## Exercise 1 ##
 
