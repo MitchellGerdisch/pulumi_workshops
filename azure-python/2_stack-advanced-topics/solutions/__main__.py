@@ -1,7 +1,6 @@
-## Exercise 1: Create and use a configuration secret for a password.
-## NOTE: The code as written now will fail since there is a reference to a password variable that is not set.
-## The goal of this exercise is to address that by storing the password in the stack config as a secret
-## And then getting the value in the code.
+# Exercise 1: Create and use a configuration secret for a password.
+# The code as written now will fail since there is a reference to a password variable that is not set.
+# This exercise is to address that by getting the password stored in the stack config as a secret.
 # Config Doc: https://www.pulumi.com/docs/intro/concepts/config/ 
 # Secrets Doc: https://www.pulumi.com/docs/intro/concepts/secrets/
 
@@ -11,27 +10,31 @@
 # Stack Outputs Doc: https://www.pulumi.com/docs/intro/concepts/stack/#outputs
 # Seeing Stack Secret Outputs Doc: https://www.pulumi.com/docs/reference/cli/pulumi_stack/
 
-## Exercise 3: Make the code more modular and readable by moving config and related set up to it's own file
-## and move the cluster decalration and related bits to it's own file. 
-## Hint: This is simply using python constructs to create a more modular code base.
+## Exercise 3: Make the code more modular and readable by moving config and cluster into separate modules.
+## NOTE: This is simply using python constructs to create a more modular code base.
 
 import base64
-import pulumi
-from pulumi import Config
-from pulumi_tls import PrivateKey
 from pulumi_azure_native import resources, containerservice
+import pulumi
 import pulumi_azuread as azuread
 import pulumi_kubernetes as k8s
+from pulumi import Config
+from pulumi_random import RandomPassword
+from pulumi_tls import PrivateKey
 
 config = Config()
 k8s_version = config.get('k8sVersion') or '1.18.14'
-admin_username = config.get('adminUserName') or 'testuser'
-node_count = config.get_int('nodeCount') or 2
-node_size = config.get('nodeSize') or 'Standard_D2_v2'
+password = config.getSecret('password') or RandomPassword('pw',
+    length=20, special=True)
 
 generated_key_pair = PrivateKey('ssh-key',
     algorithm='RSA', rsa_bits=4096)
 ssh_public_key = generated_key_pair.public_key_openssh
+
+admin_username = config.get('adminUserName') or 'testuser'
+
+node_count = config.get_int('nodeCount') or 2
+node_size = config.get('nodeSize') or 'Standard_D2_v2'
 
 resource_group = resources.ResourceGroup('rg')
 
@@ -51,24 +54,24 @@ k8s_cluster = containerservice.ManagedCluster('cluster',
         },
     },
     agent_pool_profiles=[{
-        'count': node_count,
-        'max_pods': 2,
+        'count': config.node_count,
+        'max_pods': 110,
         'mode': 'System',
         'name': 'agentpool',
         'node_labels': {},
         'os_disk_size_gb': 30,
         'os_type': 'Linux',
         'type': 'VirtualMachineScaleSets',
-        'vm_size': node_size,
+        'vm_size': config.node_size,
     }],
     dns_prefix=resource_group.name,
     enable_rbac=True,
-    kubernetes_version=k8s_version,
+    kubernetes_version=config.k8s_version,
     linux_profile={
-        'admin_username': admin_username,
+        'admin_username': config.admin_username,
         'ssh': {
             'publicKeys': [{
-                'keyData': ssh_public_key,
+                'keyData': config.ssh_public_key,
             }],
         },
     },
@@ -99,6 +102,6 @@ apache = Chart('apache-chart',
 apache_service_ip = apache.get_resource('v1/Service', 'apache-chart').apply(
     lambda res: res.status.load_balancer.ingress[0].ip)
 
-pulumi.export('resource_group_name', resource_group.name)
 pulumi.export('cluster_name', k8s_cluster.name)
-pulumi.export('apache_service_ip', f'http://{apache_service_ip}')
+pulumi.export('kubeconfig', kubeconfig)
+pulumi.export('apache_service_ip', apache_service_ip)

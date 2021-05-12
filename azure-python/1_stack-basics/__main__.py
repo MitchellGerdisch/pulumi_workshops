@@ -1,5 +1,3 @@
-"""An Azure RM Python Pulumi program"""
-
 ## Exercise 1: Export the resource group name as a stack output
 # Doc: https://www.pulumi.com/docs/intro/concepts/stack/#outputs
 
