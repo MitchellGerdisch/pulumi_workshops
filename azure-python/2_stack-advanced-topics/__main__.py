@@ -1,4 +1,4 @@
-"""Provisions an AKS cluster and deploys an Apache helm chart."""
+
 
 import base64
 
