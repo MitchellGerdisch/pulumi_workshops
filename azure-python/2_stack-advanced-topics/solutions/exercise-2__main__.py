@@ -5,8 +5,7 @@
 ## And, when exported as a stack output, you will see that Pulumi will keep it as a secret.
 ## Furthermore, secrets are not displayed in logs or in the Pulumi Console (SaaS).
 # Config Doc: https://www.pulumi.com/docs/intro/concepts/config/ 
-# Secrets Doc: https://www.pulumi.com/docs/intro/concepts/secrets
-# VALIDATION: Look at the stack config file and see that the password is stored as encrypted data.
+# Secrets Doc: https://www.pulumi.com/docs/intro/concepts/secrets/
 
 ## Exercise 2: Programmatically set the kubeconfig obtained from the K8s cluster as a secret in the code and make it a stack output.
 ## Exercise 2a: See the secret output's value.
@@ -17,21 +16,28 @@
 ## Exercise 3: Make the code more modular and readable by moving config and related set up to it's own file
 ## and move the cluster decalration and related bits to it's own file. 
 ## Hint: This is simply using python constructs whereby code blocks can be put in separate files, 
-## be imported into the main program and referenced accordingly.
+## be imported into the main program and referenced accordingly..
 
 import base64
 import pulumi
-from pulumi import Config
+from pulumi import Config, ResourceOptions
 from pulumi_tls import PrivateKey
 from pulumi_azure_native import resources, containerservice
 import pulumi_azuread as azuread
 import pulumi_kubernetes as k8s
+from pulumi_kubernetes.helm.v3 import Chart, ChartOpts
 
 config = Config()
 k8s_version = config.get('k8sVersion') or '1.18.14'
 admin_username = config.get('adminUserName') or 'testuser'
 node_count = config.get_int('nodeCount') or 2
 node_size = config.get('nodeSize') or 'Standard_D2_v2'
+
+## Exercise 1
+## Suggestion: Take a look at the stack config file (e.g. Pulumi.dev.yaml) to confirm you stored the password as a secret.
+password = config.require_secret("password")
+pulumi.export('password', password)
+## Exercise 1
 
 generated_key_pair = PrivateKey('ssh-key',
     algorithm='RSA', rsa_bits=4096)
@@ -56,7 +62,7 @@ k8s_cluster = containerservice.ManagedCluster('cluster',
     },
     agent_pool_profiles=[{
         'count': node_count,
-        'max_pods': 2,
+        'max_pods': 20,
         'mode': 'System',
         'name': 'agentpool',
         'node_labels': {},
@@ -93,21 +99,26 @@ creds = pulumi.Output.all(resource_group.name, k8s_cluster.name).apply(
         resource_name=args[1]))
 
 # The "list_managed_cluster_user_credentials" function returns an array of base64 encoded kubeconfigs.
-# So decode the kubeconfig for our cluster
-kubeconfig = creds.kubeconfigs[0].value.apply(
-    lambda enc: base64.b64decode(enc).decode())
+# So decode the kubeconfig for our cluster.
+## Exercise 2/2a
+## How to programmatically create a secret: Use `pulumi.Output.secret()`
+kubeconfig = pulumi.Output.secret(creds.kubeconfigs[0].value.apply(
+    lambda enc: base64.b64decode(enc).decode()))
+## How to get the unecrypted value from the stack outputs: `pulumi stack output kubeconfig --show-secret`
+pulumi.export('kubeconfig', kubeconfig)
+## Exercise 2
 
 # The K8s provider which supplies the helm chart resource needs to know how to talk to the K8s cluster.
-# So, instantiate a K8s provider using the retrieved kubeconfig
+# So, instantiate a K8s provider using the retrieved kubeconfig.
 k8s_provider = k8s.Provider('k8s-provider', kubeconfig=kubeconfig)
 
 # Create a chart resource to deploy apache using the k8s provider instantiated above.
-apache = k8s.Chart('apache-chart',
-    k8s.ChartOpts(
+apache = Chart('apache-chart',
+    ChartOpts(
         chart='apache',
         version='8.3.2',
         fetch_opts={'repo': 'https://charts.bitnami.com/bitnami'}),
-    opts=pulumi.ResourceOptions(provider=k8s_provider))
+    opts=ResourceOptions(provider=k8s_provider))
 
 # Get the helm-deployed apache service IP which isn't known until the chart is deployed.
 apache_service_ip = apache.get_resource('v1/Service', 'apache-chart').apply(
