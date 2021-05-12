@@ -6,7 +6,6 @@
 ## Furthermore, secrets are not displayed in logs or in the Pulumi Console (SaaS).
 # Config Doc: https://www.pulumi.com/docs/intro/concepts/config/ 
 # Secrets Doc: https://www.pulumi.com/docs/intro/concepts/secrets/
-# VALIDATION: Look at the stack config file and see that the password is stored as encrypted data.
 
 ## Exercise 2: Programmatically set the kubeconfig obtained from the K8s cluster as a secret in the code and make it a stack output.
 ## Exercise 2a: See the secret output's value.
@@ -22,7 +21,7 @@
 ## Exercise 4: Make the code more modular and readable by moving config and related set up to it's own file
 ## and move the cluster decalration and related bits to it's own file. 
 ## Hint: This is simply using python constructs whereby code blocks can be put in separate files, 
-## be imported into the main program and referenced accordingly.
+## be imported into the main program and referenced accordingly..
 
 import base64
 import pulumi
@@ -32,7 +31,6 @@ from pulumi_azure_native import resources, containerservice
 import pulumi_azuread as azuread
 import pulumi_kubernetes as k8s
 from pulumi_kubernetes.helm.v3 import Chart, ChartOpts
-
 
 config = Config()
 k8s_version = config.get('k8sVersion') or '1.18.14'
@@ -107,8 +105,13 @@ creds = pulumi.Output.all(resource_group.name, k8s_cluster.name).apply(
 
 # The "list_managed_cluster_user_credentials" function returns an array of base64 encoded kubeconfigs.
 # So decode the kubeconfig for our cluster.
-kubeconfig = creds.kubeconfigs[0].value.apply(
-    lambda enc: base64.b64decode(enc).decode())
+## Exercise 2/2a
+## How to programmatically create a secret: Use `pulumi.Output.secret()`
+kubeconfig = pulumi.Output.secret(creds.kubeconfigs[0].value.apply(
+    lambda enc: base64.b64decode(enc).decode()))
+## How to get the unecrypted value from the stack outputs: `pulumi stack output kubeconfig --show-secret`
+pulumi.export('kubeconfig', kubeconfig)
+## Exercise 2
 
 # The K8s provider which supplies the helm chart resource needs to know how to talk to the K8s cluster.
 # So, instantiate a K8s provider using the retrieved kubeconfig.
@@ -129,3 +132,11 @@ apache_service_ip = apache.get_resource('v1/Service', 'apache-chart').apply(
 pulumi.export('resource_group_name', resource_group.name)
 pulumi.export('cluster_name', k8s_cluster.name)
 pulumi.export('apache_service_ip', apache_service_ip)
+
+## Exercise 3
+# Showing the WRONG way so one can see how it outputs
+pulumi.export('apache_url_wrong', f'http://{apache_service_ip}')
+# Correct option using "concat()"
+pulumi.export('apache_url_using_concat', pulumi.Output.concat('http://', apache_service_ip)) 
+# Correct option using "apply()"
+pulumi.export('apache_url_using_apply', apache_service_ip.apply(lambda ip: f'http://{ip}'))
