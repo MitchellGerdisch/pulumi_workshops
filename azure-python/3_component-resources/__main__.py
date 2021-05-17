@@ -1,160 +1,90 @@
-## Exercise 1: Move the CosmoDB section (marked by ### Cosmios###) into a component resource.
+## Exercise 1: Move the VirtualNetwork, PublicIpAddress and NetworkInterface resources to a component resource.
 ## It should take as input parameters: 
 ## - resource group name 
-## - resource group location 
 ## It should provide the following outputs: 
-## - cosmos db account name, 
-## - db name, 
-## - db container name 
-## - account keys primary key
+## - NetworkInterface ID
+## - Public IP Address (Hint: Move/modify the block of code used to get the public IP address to the component resource.)
 # Component Resources Doc: https://www.pulumi.com/docs/intro/concepts/resources/#components
 # Example Code: https://github.com/pulumi/examples/blob/master/azure-py-virtual-data-center/spoke.py
 
-
-import pulumi
-import pulumi_azure_native.authorization as authorization
-import pulumi_azure_native.documentdb as documentdb
-import pulumi_azure_native.logic as logic
+import base64
+from pulumi import Config, Output, export
+import pulumi_azure_native.compute as compute
+import pulumi_azure_native.network as network
 import pulumi_azure_native.resources as resources
-import pulumi_azure_native.storage as storage
-import pulumi_azure_native.web as web
 
-# Create an Azure Resource Group
-resource_group = resources.ResourceGroup("resourceGroup")
+config = Config()
+username = config.require("username")
+password = config.require("password")
 
-# # Create an Azure resource (Storage Account)
-# storage_account = storage.StorageAccount(
-#     "logicappdemosa",
-#     resource_group_name=resource_group.name,
-#     sku=storage.SkuArgs(
-#         name=storage.SkuName.STANDARD_LRS,
-#     ),
-#     kind=storage.Kind.STORAGE_V2)
+resource_group = resources.ResourceGroup("server")
 
-### Cosmos DB ####
-# Cosmos DB Account
-cosmosdb_account = documentdb.DatabaseAccount(
-    "logicappdemo-cdb",
+net = network.VirtualNetwork(
+    "server-network",
     resource_group_name=resource_group.name,
-    database_account_offer_type=documentdb.DatabaseAccountOfferType.STANDARD,
-    locations=[documentdb.LocationArgs(
-        location_name=resource_group.location,
-        failover_priority=0,
-    )],
-    consistency_policy=documentdb.ConsistencyPolicyArgs(
-        default_consistency_level=documentdb.DefaultConsistencyLevel.SESSION,
-    ))
+    address_space=network.AddressSpaceArgs(
+        address_prefixes=["10.0.0.0/16"],
+    ),
+    subnets=[network.SubnetArgs(
+        name="default",
+        address_prefix="10.0.1.0/24",
+    )])
 
-# Cosmos DB Database
-db = documentdb.SqlResourceSqlDatabase(
-    "sqldb",
+public_ip = network.PublicIPAddress(
+    "server-ip",
     resource_group_name=resource_group.name,
-    account_name=cosmosdb_account.name,
-    resource=documentdb.SqlDatabaseResourceArgs(
-        id="sqldb",
-    ))
+    public_ip_allocation_method=network.IPAllocationMethod.DYNAMIC)
 
-# Cosmos DB SQL Container
-db_container = documentdb.SqlResourceSqlContainer(
-    "container",
+network_iface = network.NetworkInterface(
+    "server-nic",
     resource_group_name=resource_group.name,
-    account_name=cosmosdb_account.name,
-    database_name=db.name,
-    resource=documentdb.SqlContainerResourceArgs(
-        id="container",
-        partition_key=documentdb.ContainerPartitionKeyArgs(
-            paths=["/myPartitionKey"],
-            kind="Hash",
-        )
-    ))
+    ip_configurations=[network.NetworkInterfaceIPConfigurationArgs(
+        name="webserveripcfg",
+        subnet=network.SubnetArgs(id=net.subnets[0].id),
+        private_ip_allocation_method=network.IPAllocationMethod.DYNAMIC,
+        public_ip_address=network.PublicIPAddressArgs(id=public_ip.id),
+    )])
 
-account_keys = pulumi.Output.all(cosmosdb_account.name, resource_group.name).apply(
-    lambda arg: documentdb.list_database_account_keys(account_name=arg[0], resource_group_name=arg[1]))
-### Cosmos DB ###
+init_script = """#!/bin/bash
 
-client_config = pulumi.Output.from_input(authorization.get_client_config())
+echo "Hello, World!" > index.html
+nohup python -m SimpleHTTPServer 80 &"""
 
-api_id = pulumi.Output.all(client_config.subscription_id, resource_group.location).apply(
-    lambda arg: f"/subscriptions/{arg[0]}/providers/Microsoft.Web/locations/{arg[1]}/managedApis/documentdb")
-
-# API Connection to be used in a Logic App
-connection = web.Connection(
-    "connection",
+vm = compute.VirtualMachine(
+    "server-vm",
     resource_group_name=resource_group.name,
-    properties=web.ApiConnectionDefinitionPropertiesArgs(
-        display_name="cosmosdb_connection",
-        api=web.ApiReferenceArgs(
-            id=api_id,
+    network_profile=compute.NetworkProfileArgs(
+        network_interfaces=[
+            compute.NetworkInterfaceReferenceArgs(id=network_iface.id),
+        ],
+    ),
+    hardware_profile=compute.HardwareProfileArgs(
+        vm_size=compute.VirtualMachineSizeTypes.STANDARD_A0,
+    ),
+    os_profile=compute.OSProfileArgs(
+        computer_name="hostname",
+        admin_username=username,
+        admin_password=password,
+        custom_data=base64.b64encode(init_script.encode("ascii")).decode("ascii"),
+        linux_configuration=compute.LinuxConfigurationArgs(
+            disable_password_authentication=False,
         ),
-        parameter_values={
-            "databaseAccount": cosmosdb_account.name,
-            "access_key": account_keys.primary_master_key,
-        },
+    ),
+    storage_profile=compute.StorageProfileArgs(
+        os_disk=compute.OSDiskArgs(
+            create_option=compute.DiskCreateOptionTypes.FROM_IMAGE,
+        ),
+        image_reference=compute.ImageReferenceArgs(
+            publisher="canonical",
+            offer="UbuntuServer",
+            sku="16.04-LTS",
+            version="latest",
+        ),
     ))
 
-# Logic App with an HTTP trigger and Cosmos DB action
-workflow = logic.Workflow(
-    "workflow",
-    resource_group_name=resource_group.name,
-    definition={
-        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
-        "content_version": "1.0.0.0",
-        "parameters": {
-            "$connections": {
-                "default_value": {},
-                "type": "Object",
-            },
-        },
-        "triggers": {
-            "Receive_post": {
-                "type": "Request",
-                "kind": "Http",
-                "inputs": {
-                    "method": "POST",
-                    "schema": {
-                        "properties": {},
-                        "type": "object",
-                    },
-                },
-            },
-        },
-        "actions": {
-            "write_body": {
-                "type": "ApiConnection",
-                "inputs": {
-                    "body": {
-                        "data": "@triggerBody()",
-                        "id": "@utcNow()",
-                    },
-                    "host": {
-                        "connection": {
-                            "name": "@parameters('$connections')['documentdb']['connectionId']",
-                        },
-                    },
-                    "method": "post",
-                    "path": pulumi.Output.all(db.name, db_container.name).apply(
-                        lambda arg: f"/dbs/{arg[0]}/colls/{arg[1]}/docs"),
-                },
-            },
-        },
-    },
-    parameters={
-        "$connections": logic.WorkflowParameterArgs(
-            value={
-                "documentdb": {
-                    "connection_id": connection.id,
-                    "connection_name": "logicapp-cosmosdb-connection",
-                    "id": api_id,
-                },
-            },
-        ),
-    })
-
-callback_urls = pulumi.Output.all(resource_group.name, workflow.name).apply(
-    lambda arg: logic.list_workflow_trigger_callback_url(
-        resource_group_name=arg[0],
-        workflow_name=arg[1],
-        trigger_name="Receive_post"))
-
-# Export the HTTP endpoint
-pulumi.export("endpoint", callback_urls.value)
+combined_output = Output.all(vm.id, public_ip.name, resource_group.name)
+public_ip_addr = combined_output.apply(
+    lambda lst: network.get_public_ip_address(
+        public_ip_address_name=lst[1], 
+        resource_group_name=lst[2]))
+export("public_ip", public_ip_addr.ip_address)
