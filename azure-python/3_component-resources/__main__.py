@@ -1,111 +1,124 @@
-# Builds a static website using Azure CDN, and Storage Account
-#
-## Exercise 1: Move the CDN resources into a "frontend" component resource class. 
+## Exercise 1: Move the AKS Cluster Related Resources into a component resource module.
 ## It should take as input parameters: 
-## - resource group name 
-## - origin endpoint
+## - config values used by the resources.
+## - resource group name
 ## It should provide the following outputs: 
-## - CDN URL 
+## - K8s kubeconfig
 # Component Resources Doc: https://www.pulumi.com/docs/intro/concepts/resources/#components
 # Example Code: https://github.com/pulumi/examples/blob/master/azure-py-virtual-data-center/spoke.py
 
-## Exercise 2: Add the "protect" resource option to the "frontend" resource and do a `pulumi up` and then a `pulumi destroy`
+## Exercise 2: Add the "protect" resource option to the "network" resource and do a `pulumi up` and then a `pulumi destroy`
+## Note how the component resource children get the protect option enabled.
+## Note how you can't destroy the stack as long as protect is true.
 # Doc: https://www.pulumi.com/docs/intro/concepts/resources/#protect
-# Note how the protect flag is propagated to the component resource's children. 
-# To destroy the stack you can set the flag to false or remove the protect flag and 
-# then do another `pulumi up` and then `pulumi destroy`.
-# Or, see: https://www.pulumi.com/docs/reference/cli/pulumi_state_unprotect/ 
-# For a way to remove protect for a stack state before running `pulumi destroy`
+# Doc: https://www.pulumi.com/docs/reference/cli/pulumi_state_unprotect/
 
+import base64
 import pulumi
-import pulumi_azure_native.cdn as cdn
-import pulumi_azure_native.resources as resources
-import pulumi_azure_native.storage as storage
+from pulumi import Config, ResourceOptions
+from pulumi_tls import PrivateKey
+from pulumi_azure_native import resources, containerservice
+import pulumi_azuread as azuread
+import pulumi_kubernetes as k8s
+from pulumi_kubernetes.helm.v3 import Chart, ChartOpts
 
-base_name = pulumi.get("base_name") or "component"
-resource_group = resources.ResourceGroup(f"{base_name}-rg")
+# Config values or defaults
+config = Config()
+k8s_version = config.get('k8sVersion') or '1.18.14'
+admin_username = config.get('adminUserName') or 'testuser'
+node_count = config.get_int('nodeCount') or 2
+node_size = config.get('nodeSize') or 'Standard_D2_v2'
+password = config.get_secret("password")
+if not password:
+    rando_password=random.RandomPassword('password',
+        length=16,
+        special=True,
+        override_special='@_#',
+        )
+    password=rando_password.result 
 
-profile = cdn.Profile(
-    f"{base_name}-profile",
+# Resource Group
+resource_group = resources.ResourceGroup('rg')
+
+### AKS Cluster Related Resources
+generated_key_pair = PrivateKey('ssh-key',
+    algorithm='RSA', rsa_bits=4096)
+ssh_public_key = generated_key_pair.public_key_openssh
+
+ad_app = azuread.Application('app', display_name='app')
+ad_sp = azuread.ServicePrincipal('service-principal',
+    application_id=ad_app.application_id)
+ad_sp_password = azuread.ServicePrincipalPassword('sp-password',
+    service_principal_id=ad_sp.id,
+    value=password,
+    end_date='2099-01-01T00:00:00Z')
+
+k8s_cluster = containerservice.ManagedCluster('cluster',
     resource_group_name=resource_group.name,
-    sku=cdn.SkuArgs(
-        name=cdn.SkuName.STANDARD_MICROSOFT,
-    ))
+    addon_profiles={
+        'KubeDashboard': {
+            'enabled': True,
+        },
+    },
+    agent_pool_profiles=[{
+        'count': node_count,
+        'max_pods': 20,
+        'mode': 'System',
+        'name': 'agentpool',
+        'node_labels': {},
+        'os_disk_size_gb': 30,
+        'os_type': 'Linux',
+        'type': 'VirtualMachineScaleSets',
+        'vm_size': node_size,
+    }],
+    dns_prefix=resource_group.name,
+    enable_rbac=True,
+    kubernetes_version=k8s_version,
+    linux_profile={
+        'admin_username': admin_username,
+        'ssh': {
+            'publicKeys': [{
+                'keyData': ssh_public_key,
+            }],
+        },
+    },
+    node_resource_group='node-resource-group',
+    service_principal_profile={
+        'client_id': ad_app.application_id,
+        'secret': ad_sp_password.value,
+    })
 
-storage_account = storage.StorageAccount(
-    f"{base_name}-sa",
-    access_tier=storage.AccessTier.HOT,
-    enable_https_traffic_only=True,
-    encryption=storage.EncryptionArgs(
-        key_source=storage.KeySource.MICROSOFT_STORAGE,
-        services=storage.EncryptionServicesArgs(
-            blob=storage.EncryptionServiceArgs(
-                enabled=True,
-            ),
-            file=storage.EncryptionServiceArgs(
-                enabled=True,
-            ),
-        ),
-    ),
-    kind=storage.Kind.STORAGE_V2,
-    network_rule_set=storage.NetworkRuleSetArgs(
-        bypass=storage.Bypass.AZURE_SERVICES,
-        default_action=storage.DefaultAction.ALLOW,
-    ),
-    resource_group_name=resource_group.name,
-    sku=storage.SkuArgs(
-        name=storage.SkuName.STANDARD_LRS,
-    ))
+# Obtaining the kubeconfig from an Azure K8s cluster requires using the "list_managed_clsuter_user_credentials"
+# function.
+# That function requires passing values that are not be known until the resources are created.
+# Thus, the use of "apply()" to wait for those values before calling the function.
+creds = pulumi.Output.all(resource_group.name, k8s_cluster.name).apply(
+    lambda args:
+    containerservice.list_managed_cluster_user_credentials(
+        resource_group_name=args[0],
+        resource_name=args[1]))
 
-# Get the base endpoint for the eventual storage account based website by stripping away the URL stuff.
-# The CDN will be configured to front this endpoint.
-endpoint_origin = storage_account.primary_endpoints.apply(
-    lambda primary_endpoints: primary_endpoints.web.replace("https://", "").replace("/", ""))
+# The "list_managed_cluster_user_credentials" function returns an array of base64 encoded kubeconfigs.
+# So decode the kubeconfig for our cluster but mark it as a secret so Pulumi treats it accordingly.
+kubeconfig = pulumi.Output.secret(creds.kubeconfigs[0].value.apply(
+    lambda enc: base64.b64decode(enc).decode()))
+## End of Cluster Related Resources
 
-# Create a CDN endpoint that points at the storage account hosted website.
-endpoint = cdn.Endpoint(
-    f"{base_name}-endpoint",
-    endpoint_name=storage_account.name.apply(lambda sa: f"cdn-endpnt-{sa}"),
-    is_http_allowed=False,
-    is_https_allowed=True,
-    origin_host_header=endpoint_origin,
-    origins=[cdn.DeepCreatedOriginArgs(
-        host_name=endpoint_origin,
-        https_port=443,
-        name="origin-storage-account",
-    )],
-    profile_name=profile.name,
-    query_string_caching_behavior=cdn.QueryStringCachingBehavior.NOT_SET,
-    resource_group_name=resource_group.name)
+# The K8s provider which supplies the helm chart resource needs to know how to talk to the K8s cluster.
+# So, instantiate a K8s provider using the retrieved kubeconfig.
+k8s_provider = k8s.Provider('k8s-provider', kubeconfig=kubeconfig)
 
-# Enable static website support
-static_website = storage.StorageAccountStaticWebsite(
-    f"{base_name}-staticWebsite",
-    account_name=storage_account.name,
-    resource_group_name=resource_group.name,
-    index_document="index.html",
-    error404_document="404.html")
+# Create a chart resource to deploy apache using the k8s provider instantiated above.
+apache = Chart('apache-chart',
+    ChartOpts(
+        chart='apache',
+        version='8.3.2',
+        fetch_opts={'repo': 'https://charts.bitnami.com/bitnami'}),
+    opts=ResourceOptions(provider=k8s_provider))
 
-# Upload the website files to storage.
-index_html = storage.Blob(
-    "index_html",
-    resource_group_name=resource_group.name,
-    account_name=storage_account.name,
-    container_name=static_website.container_name,
-    source=pulumi.FileAsset("./wwwroot/index.html"),
-    content_type="text/html")
-notfound_html = storage.Blob(
-    "notfound_html",
-    resource_group_name=resource_group.name,
-    account_name=storage_account.name,
-    container_name=static_website.container_name,
-    source=pulumi.FileAsset("./wwwroot/404.html"),
-    content_type="text/html")
+# Get the helm-deployed apache service IP which isn't known until the chart is deployed.
+apache_service_ip = apache.get_resource('v1/Service', 'apache-chart').apply(
+    lambda res: res.status.load_balancer.ingress[0].ip)
 
-# Web endpoint to the website
-pulumi.export("staticEndpoint", storage_account.primary_endpoints.web)
-
-# CDN endpoint to the website.
-# Azure takes a bit of time to set up the CDN.
-# So you may need to refresh a few times before it is ready. 
-pulumi.export("cdnEndpoint", endpoint.host_name.apply(lambda host_name: f"https://{host_name}"))
+# Correct option using "concat()"
+pulumi.export('Apache_URL', pulumi.Output.concat('http://', apache_service_ip)) 
