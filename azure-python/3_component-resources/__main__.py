@@ -12,10 +12,20 @@ from pulumi import Config, Output, export
 import pulumi_azure_native.compute as compute
 import pulumi_azure_native.network as network
 import pulumi_azure_native.resources as resources
+import pulumi_random as random
 
 config = Config()
-username = config.require("username")
-password = config.require("password")
+username = config.get("username") or "webserver"
+
+# Get secretified password from config and protect it going forward, or create one using the 'random' provider.
+password=config.get_secret("password")
+if not password:
+    rando_password=random.RandomPassword('password',
+        length=16,
+        special=True,
+        override_special='@_#',
+        )
+    password=password.result 
 
 resource_group = resources.ResourceGroup("server")
 
