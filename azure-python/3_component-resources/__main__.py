@@ -1,36 +1,39 @@
 # Builds a static website using Azure CDN, and Storage Account
 #
-## Exercise 1: Move the VirtualNetwork, PublicIpAddress and NetworkInterface resources to a component resource.
+## Exercise 1: Move the CDN resources into a "frontend" component resource class. 
 ## It should take as input parameters: 
 ## - resource group name 
+## - origin endpoint
 ## It should provide the following outputs: 
-## - NetworkInterface ID
-## - Public IP Address (Hint: Move/modify the block of code used to get the public IP address to the component resource.)
+## - CDN URL 
 # Component Resources Doc: https://www.pulumi.com/docs/intro/concepts/resources/#components
 # Example Code: https://github.com/pulumi/examples/blob/master/azure-py-virtual-data-center/spoke.py
 
-## Exercise 2: Add the "protect" resource option to the "network" resource and do a `pulumi up` and then a `pulumi destroy`
-## Note how the component resource children get the protect option enabled.
-## Note how you can't destroy the stack as long as protect is true.
+## Exercise 2: Add the "protect" resource option to the "frontend" resource and do a `pulumi up` and then a `pulumi destroy`
 # Doc: https://www.pulumi.com/docs/intro/concepts/resources/#protect
-# Doc: https://www.pulumi.com/docs/reference/cli/pulumi_state_unprotect/
+# Note how the protect flag is propagated to the component resource's children. 
+# To destroy the stack you can set the flag to false or remove the protect flag and 
+# then do another `pulumi up` and then `pulumi destroy`.
+# Or, see: https://www.pulumi.com/docs/reference/cli/pulumi_state_unprotect/ 
+# For a way to remove protect for a stack state before running `pulumi destroy`
 
 import pulumi
 import pulumi_azure_native.cdn as cdn
 import pulumi_azure_native.resources as resources
 import pulumi_azure_native.storage as storage
 
-resource_group = resources.ResourceGroup("resourceGroup")
+base_name = pulumi.get("base_name") or "component"
+resource_group = resources.ResourceGroup(f"{base_name}-rg")
 
 profile = cdn.Profile(
-    "profile",
+    f"{base_name}-profile",
     resource_group_name=resource_group.name,
     sku=cdn.SkuArgs(
         name=cdn.SkuName.STANDARD_MICROSOFT,
     ))
 
 storage_account = storage.StorageAccount(
-    "storageaccount",
+    f"{base_name}-sa",
     access_tier=storage.AccessTier.HOT,
     enable_https_traffic_only=True,
     encryption=storage.EncryptionArgs(
@@ -54,11 +57,14 @@ storage_account = storage.StorageAccount(
         name=storage.SkuName.STANDARD_LRS,
     ))
 
+# Get the base endpoint for the eventual storage account based website by stripping away the URL stuff.
+# The CDN will be configured to front this endpoint.
 endpoint_origin = storage_account.primary_endpoints.apply(
     lambda primary_endpoints: primary_endpoints.web.replace("https://", "").replace("/", ""))
 
+# Create a CDN endpoint that points at the storage account hosted website.
 endpoint = cdn.Endpoint(
-    "endpoint",
+    f"{base_name}-endpoint",
     endpoint_name=storage_account.name.apply(lambda sa: f"cdn-endpnt-{sa}"),
     is_http_allowed=False,
     is_https_allowed=True,
@@ -74,13 +80,13 @@ endpoint = cdn.Endpoint(
 
 # Enable static website support
 static_website = storage.StorageAccountStaticWebsite(
-    "staticWebsite",
+    f"{base_name}-staticWebsite",
     account_name=storage_account.name,
     resource_group_name=resource_group.name,
     index_document="index.html",
     error404_document="404.html")
 
-# Upload the files
+# Upload the website files to storage.
 index_html = storage.Blob(
     "index_html",
     resource_group_name=resource_group.name,
@@ -100,5 +106,6 @@ notfound_html = storage.Blob(
 pulumi.export("staticEndpoint", storage_account.primary_endpoints.web)
 
 # CDN endpoint to the website.
-# Allow it some time after the deployment to get ready.
+# Azure takes a bit of time to set up the CDN.
+# So you may need to refresh a few times before it is ready. 
 pulumi.export("cdnEndpoint", endpoint.host_name.apply(lambda host_name: f"https://{host_name}"))
