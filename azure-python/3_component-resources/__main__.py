@@ -1,3 +1,5 @@
+# Builds a static website using Azure CDN, and Storage Account
+#
 ## Exercise 1: Move the VirtualNetwork, PublicIpAddress and NetworkInterface resources to a component resource.
 ## It should take as input parameters: 
 ## - resource group name 
@@ -7,94 +9,96 @@
 # Component Resources Doc: https://www.pulumi.com/docs/intro/concepts/resources/#components
 # Example Code: https://github.com/pulumi/examples/blob/master/azure-py-virtual-data-center/spoke.py
 
-import base64
-from pulumi import Config, Output, export
-import pulumi_azure_native.compute as compute
-import pulumi_azure_native.network as network
+## Exercise 2: Add the "protect" resource option to the "network" resource and do a `pulumi up` and then a `pulumi destroy`
+## Note how the component resource children get the protect option enabled.
+## Note how you can't destroy the stack as long as protect is true.
+# Doc: https://www.pulumi.com/docs/intro/concepts/resources/#protect
+# Doc: https://www.pulumi.com/docs/reference/cli/pulumi_state_unprotect/
+
+import pulumi
+import pulumi_azure_native.cdn as cdn
 import pulumi_azure_native.resources as resources
-import pulumi_random as random
+import pulumi_azure_native.storage as storage
 
-config = Config()
-username = config.get("username") or "webserver"
+resource_group = resources.ResourceGroup("resourceGroup")
 
-# Get secretified password from config and protect it going forward, or create one using the 'random' provider.
-password=config.get_secret("password")
-if not password:
-    rando_password=random.RandomPassword('password',
-        length=16,
-        special=True,
-        override_special='@_#',
-        )
-    password=password.result 
-
-resource_group = resources.ResourceGroup("server")
-
-net = network.VirtualNetwork(
-    "server-network",
+profile = cdn.Profile(
+    "profile",
     resource_group_name=resource_group.name,
-    address_space=network.AddressSpaceArgs(
-        address_prefixes=["10.0.0.0/16"],
-    ),
-    subnets=[network.SubnetArgs(
-        name="default",
-        address_prefix="10.0.1.0/24",
-    )])
-
-public_ip = network.PublicIPAddress(
-    "server-ip",
-    resource_group_name=resource_group.name,
-    public_ip_allocation_method=network.IPAllocationMethod.DYNAMIC)
-
-network_iface = network.NetworkInterface(
-    "server-nic",
-    resource_group_name=resource_group.name,
-    ip_configurations=[network.NetworkInterfaceIPConfigurationArgs(
-        name="webserveripcfg",
-        subnet=network.SubnetArgs(id=net.subnets[0].id),
-        private_ip_allocation_method=network.IPAllocationMethod.DYNAMIC,
-        public_ip_address=network.PublicIPAddressArgs(id=public_ip.id),
-    )])
-
-init_script = """#!/bin/bash
-
-echo "Hello, World!" > index.html
-nohup python -m SimpleHTTPServer 80 &"""
-
-vm = compute.VirtualMachine(
-    "server-vm",
-    resource_group_name=resource_group.name,
-    network_profile=compute.NetworkProfileArgs(
-        network_interfaces=[
-            compute.NetworkInterfaceReferenceArgs(id=network_iface.id),
-        ],
-    ),
-    hardware_profile=compute.HardwareProfileArgs(
-        vm_size=compute.VirtualMachineSizeTypes.STANDARD_A0,
-    ),
-    os_profile=compute.OSProfileArgs(
-        computer_name="hostname",
-        admin_username=username,
-        admin_password=password,
-        custom_data=base64.b64encode(init_script.encode("ascii")).decode("ascii"),
-        linux_configuration=compute.LinuxConfigurationArgs(
-            disable_password_authentication=False,
-        ),
-    ),
-    storage_profile=compute.StorageProfileArgs(
-        os_disk=compute.OSDiskArgs(
-            create_option=compute.DiskCreateOptionTypes.FROM_IMAGE,
-        ),
-        image_reference=compute.ImageReferenceArgs(
-            publisher="canonical",
-            offer="UbuntuServer",
-            sku="16.04-LTS",
-            version="latest",
-        ),
+    sku=cdn.SkuArgs(
+        name=cdn.SkuName.STANDARD_MICROSOFT,
     ))
 
-combined_output = Output.all(vm.id, public_ip.name, resource_group.name)
-public_ip_addr = combined_output.apply(
-    lambda lst: network.get_public_ip_address(
-        public_ip_address_name=lst[1], 
-        resource_group_name=lst[2]))
-export("public_ip", public_ip_addr.ip_address)
+storage_account = storage.StorageAccount(
+    "storageaccount",
+    access_tier=storage.AccessTier.HOT,
+    enable_https_traffic_only=True,
+    encryption=storage.EncryptionArgs(
+        key_source=storage.KeySource.MICROSOFT_STORAGE,
+        services=storage.EncryptionServicesArgs(
+            blob=storage.EncryptionServiceArgs(
+                enabled=True,
+            ),
+            file=storage.EncryptionServiceArgs(
+                enabled=True,
+            ),
+        ),
+    ),
+    kind=storage.Kind.STORAGE_V2,
+    network_rule_set=storage.NetworkRuleSetArgs(
+        bypass=storage.Bypass.AZURE_SERVICES,
+        default_action=storage.DefaultAction.ALLOW,
+    ),
+    resource_group_name=resource_group.name,
+    sku=storage.SkuArgs(
+        name=storage.SkuName.STANDARD_LRS,
+    ))
+
+endpoint_origin = storage_account.primary_endpoints.apply(
+    lambda primary_endpoints: primary_endpoints.web.replace("https://", "").replace("/", ""))
+
+endpoint = cdn.Endpoint(
+    "endpoint",
+    endpoint_name=storage_account.name.apply(lambda sa: f"cdn-endpnt-{sa}"),
+    is_http_allowed=False,
+    is_https_allowed=True,
+    origin_host_header=endpoint_origin,
+    origins=[cdn.DeepCreatedOriginArgs(
+        host_name=endpoint_origin,
+        https_port=443,
+        name="origin-storage-account",
+    )],
+    profile_name=profile.name,
+    query_string_caching_behavior=cdn.QueryStringCachingBehavior.NOT_SET,
+    resource_group_name=resource_group.name)
+
+# Enable static website support
+static_website = storage.StorageAccountStaticWebsite(
+    "staticWebsite",
+    account_name=storage_account.name,
+    resource_group_name=resource_group.name,
+    index_document="index.html",
+    error404_document="404.html")
+
+# Upload the files
+index_html = storage.Blob(
+    "index_html",
+    resource_group_name=resource_group.name,
+    account_name=storage_account.name,
+    container_name=static_website.container_name,
+    source=pulumi.FileAsset("./wwwroot/index.html"),
+    content_type="text/html")
+notfound_html = storage.Blob(
+    "notfound_html",
+    resource_group_name=resource_group.name,
+    account_name=storage_account.name,
+    container_name=static_website.container_name,
+    source=pulumi.FileAsset("./wwwroot/404.html"),
+    content_type="text/html")
+
+# Web endpoint to the website
+pulumi.export("staticEndpoint", storage_account.primary_endpoints.web)
+
+# CDN endpoint to the website.
+# Allow it some time after the deployment to get ready.
+pulumi.export("cdnEndpoint", endpoint.host_name.apply(lambda host_name: f"https://{host_name}"))
