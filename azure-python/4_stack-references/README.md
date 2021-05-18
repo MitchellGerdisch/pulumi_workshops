@@ -16,11 +16,8 @@ There are two project directories:
 - Pull down the app project:
   - `cd ../app`
   - `pulumi new <app-URL>`
-- Add stack references to the `app` project to get the kubeconfig from the the `base_cluster` stack.
-- In each directory, run `pulumi stack init` to initialize a stack for each project.
-- In `base_cluster` run `pulumi up` to launch the base infrastructure stack.
-- In `app` run `pulumi up` to launch the app on the base infrastructure.
-
-See the prolog section of the main program file for the exercises.
+  - Add stack references to the `app` project to get the kubeconfig from the the `base_cluster` stack.  
+    Docs: https://www.pulumi.com/docs/intro/concepts/stack/#stackreferences
+  - `pulumi up`
 
 See the `solutions` folder for the answers.
