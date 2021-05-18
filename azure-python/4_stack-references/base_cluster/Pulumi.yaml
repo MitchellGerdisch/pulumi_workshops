@@ -1,4 +1,4 @@
-name: stack_references_base_infra
+name: stack_references_base_cluster
 runtime:
   name: python
   options:
