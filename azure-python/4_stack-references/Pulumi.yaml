@@ -1,6 +1,0 @@
-name: stack_references
-runtime:
-  name: python
-  options:
-    virtualenv: venv
-description: Stack references exercises
