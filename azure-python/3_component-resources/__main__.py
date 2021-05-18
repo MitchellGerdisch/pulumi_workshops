@@ -1,13 +1,14 @@
-## Exercise 1: Move the AKS Cluster Related Resources into a component resource module.
+## Exercise 1: Move the AKS Cluster Related Resources into the provided "cluster" component resource module shell.
+## Hint: The block of resources to move is marked with "### AKS Cluster Related Resoures"
 ## It should take as input parameters: 
-## - config values used by the resources.
+## - the various config values used by the resources
 ## - resource group name
-## It should provide the following outputs: 
+## It should provide the following output: 
 ## - K8s kubeconfig
 # Component Resources Doc: https://www.pulumi.com/docs/intro/concepts/resources/#components
 # Example Code: https://github.com/pulumi/examples/blob/master/azure-py-virtual-data-center/spoke.py
 
-## Exercise 2: Add the "protect" resource option to the "network" resource and do a `pulumi up` and then a `pulumi destroy`
+## Exercise 2: Add the "protect" resource option to the "cluster" resource and do a `pulumi up` and then a `pulumi destroy`
 ## Note how the component resource children get the protect option enabled.
 ## Note how you can't destroy the stack as long as protect is true.
 # Doc: https://www.pulumi.com/docs/intro/concepts/resources/#protect
@@ -21,6 +22,7 @@ from pulumi_azure_native import resources, containerservice
 import pulumi_azuread as azuread
 import pulumi_kubernetes as k8s
 from pulumi_kubernetes.helm.v3 import Chart, ChartOpts
+import pulumi_random as random
 
 # Config values or defaults
 config = Config()
@@ -102,7 +104,7 @@ creds = pulumi.Output.all(resource_group.name, k8s_cluster.name).apply(
 # So decode the kubeconfig for our cluster but mark it as a secret so Pulumi treats it accordingly.
 kubeconfig = pulumi.Output.secret(creds.kubeconfigs[0].value.apply(
     lambda enc: base64.b64decode(enc).decode()))
-## End of Cluster Related Resources
+### End of AKS Cluster Related Resources
 
 # The K8s provider which supplies the helm chart resource needs to know how to talk to the K8s cluster.
 # So, instantiate a K8s provider using the retrieved kubeconfig.
