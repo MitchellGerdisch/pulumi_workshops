@@ -1,14 +1,18 @@
 ## Exercise 1: Add stack references to get the kubeconfig from the "base_cluster" stack.
+# Doc: https://www.pulumi.com/docs/intro/concepts/stack/#stackreferences
 
 import pulumi
-from pulumi import StackReference, Config, ResourceOptions
+from pulumi import ResourceOptions
 import pulumi_kubernetes as k8s
 from pulumi_kubernetes.helm.v3 import Chart, ChartOpts
 
-config = Config()
-cluster_stack_name = config.require("cluster_stack_name")
-cluster_stack = StackReference(cluster_stack_name)
-kubeconfig = cluster_stack.get_output("kubeconfig");
+## Exercise 1
+# Using config data to get the name of the base stack.
+# The Pulumi automation API or other methods could be used to automate the config value.
+config = pulumi.Config()
+base_cluster_stack_name = config.require("base_cluster_stack")
+base_cluster_stack = pulumi.StackReference(base_cluster_stack_name)
+kubeconfig = base_cluster_stack.get_output("kubeconfig")
 
 # The K8s provider which supplies the helm chart resource needs to know how to talk to the K8s cluster.
 # So, instantiate a K8s provider using the retrieved kubeconfig.
